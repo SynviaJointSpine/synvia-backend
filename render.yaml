@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: synvia-sms-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE
+        sync: false
+      - key: ALERT_EMAIL
+        sync: false
+      - key: FROM_EMAIL
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
