@@ -21,13 +21,14 @@ app.get('/', (req, res) => {
 
 // Send SMS to a lead
 app.post('/send-sms', async (req, res) => {
-  const { to, body } = req.body;
-  if (!to || !body) return res.status(400).json({ error: 'Missing to or body' });
+  const { to, body, message } = req.body;
+  const text = body || message; // accept both field names (SYNVIA OS sends `message`)
+  if (!to || !text) return res.status(400).json({ error: 'Missing to or message body' });
   try {
     const msg = await getClient().messages.create({
       from: process.env.TWILIO_PHONE,
       to,
-      body,
+      body: text,
     });
     res.json({ sid: msg.sid, status: msg.status });
   } catch (e) {
@@ -111,6 +112,38 @@ app.post('/inbound-sms', (req, res) => {
   // Just acknowledge — CRM polls for new messages
   res.set('Content-Type', 'text/xml');
   res.send('<Response></Response>');
+});
+
+
+// ─── Claude AI proxy — keeps the Anthropic key server-side ─────────────────
+app.post('/claude', async (req, res) => {
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: { message: 'ANTHROPIC_API_KEY not set in Render env' } });
+    }
+    const { model, max_tokens, system, messages } = req.body || {};
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: { message: 'messages array required' } });
+    }
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: model || 'claude-sonnet-4-20250514',
+        max_tokens: Math.min(Number(max_tokens) || 1000, 2000), // cost guard
+        system: system || '',
+        messages
+      })
+    });
+    const data = await resp.json();
+    res.status(resp.status).json(data);
+  } catch (e) {
+    res.status(502).json({ error: { message: 'Claude proxy error: ' + e.message } });
+  }
 });
 
 app.listen(PORT, () => console.log(`SYNVIA backend running on port ${PORT}`));
