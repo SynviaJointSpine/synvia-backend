@@ -134,7 +134,7 @@ app.post('/claude', async (req, res) => {
       },
       body: JSON.stringify({
         model: model || 'claude-sonnet-4-6',
-        max_tokens: Math.min(Number(max_tokens) || 2000, 3000), // cost guard
+        max_tokens: Math.min(Number(max_tokens) || 2000, 4000), // cost guard
         system: system || '',
         messages
       })
