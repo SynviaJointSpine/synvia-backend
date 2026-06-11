@@ -133,8 +133,8 @@ app.post('/claude', async (req, res) => {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: model || 'claude-sonnet-4-20250514',
-        max_tokens: Math.min(Number(max_tokens) || 1000, 2000), // cost guard
+        model: model || 'claude-sonnet-4-6',
+        max_tokens: Math.min(Number(max_tokens) || 2000, 3000), // cost guard
         system: system || '',
         messages
       })
