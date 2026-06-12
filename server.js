@@ -338,4 +338,76 @@ app.post('/execute-action', async (req, res) => {
 });
 
 
+
+/* ── Generic keyed records: /save-record + /get-records ──
+   Lets any OS component persist data in its own tab of the clinic
+   sheet (care plans today; anything tomorrow — no backend changes).
+   Tabs are auto-created with a 'Key' column + field columns.        */
+const SYNVIA_RECORD_TABS = ['OS CarePlans', 'OS Settings', 'OS Notes'];
+
+async function synviaEnsureTab(tab) {
+  const meta = await synviaSheets('?fields=sheets.properties');
+  const exists = (meta.sheets || []).some((s) => s.properties && s.properties.title === tab);
+  if (!exists) {
+    await synviaSheets(':batchUpdate', { method: 'POST', body: JSON.stringify({ requests: [{ addSheet: { properties: { title: tab } } }] }) });
+    await synviaSheets(`/values/${encodeURIComponent(`'${tab}'!A1`)}?valueInputOption=RAW`, { method: 'PUT', body: JSON.stringify({ values: [['Key']] }) });
+  }
+}
+
+app.post('/save-record', async (req, res) => {
+  try {
+    const { tab, key, fields } = req.body || {};
+    if (!SYNVIA_RECORD_TABS.includes(tab)) return res.status(400).json({ success: false, error: 'Unknown record tab: ' + tab });
+    if (!key || !fields || !Object.keys(fields).length) return res.status(400).json({ success: false, error: 'Need key and fields' });
+
+    await synviaEnsureTab(tab);
+    const sheet = await synviaSheets(`/values/${encodeURIComponent(`'${tab}'`)}`);
+    const rows = sheet.values || [['Key']];
+    const headers = (rows[0] || ['Key']).map((h) => String(h || '').trim());
+    if (!headers.includes('Key')) headers.unshift('Key');
+
+    // Ensure all field columns exist
+    const newHeaders = [];
+    for (const k of Object.keys(fields)) {
+      if (!headers.includes(k)) { headers.push(k); newHeaders.push({ range: `'${tab}'!${synviaCol(headers.length - 1)}1`, values: [[k]] }); }
+    }
+    if (newHeaders.length) await synviaSheets('/values:batchUpdate', { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data: newHeaders }) });
+
+    // Upsert by Key (case-insensitive)
+    const keyCol = headers.indexOf('Key');
+    let rowIdx = -1;
+    for (let i = 1; i < rows.length; i++) {
+      if (String(rows[i][keyCol] || '').trim().toLowerCase() === String(key).trim().toLowerCase()) { rowIdx = i; break; }
+    }
+    if (rowIdx === -1) rowIdx = rows.length; // append as new row
+
+    const data = [{ range: `'${tab}'!${synviaCol(keyCol)}${rowIdx + 1}`, values: [[String(key)]] }]
+      .concat(Object.entries(fields).map(([k, v]) => ({ range: `'${tab}'!${synviaCol(headers.indexOf(k))}${rowIdx + 1}`, values: [[String(v)]] })));
+    await synviaSheets('/values:batchUpdate', { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data }) });
+
+    return res.json({ success: true, tab, key, row: rowIdx + 1 });
+  } catch (err) {
+    console.error('save-record error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/get-records', async (req, res) => {
+  try {
+    const tab = String(req.query.tab || '');
+    if (!SYNVIA_RECORD_TABS.includes(tab)) return res.status(400).json({ success: false, error: 'Unknown record tab: ' + tab });
+    await synviaEnsureTab(tab);
+    const sheet = await synviaSheets(`/values/${encodeURIComponent(`'${tab}'`)}`);
+    const rows = sheet.values || [];
+    if (rows.length < 1) return res.json({ success: true, records: [] });
+    const headers = rows[0].map((h) => String(h || '').trim());
+    const records = rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] || ''])));
+    return res.json({ success: true, records });
+  } catch (err) {
+    console.error('get-records error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
 app.listen(PORT, () => console.log(`SYNVIA backend running on port ${PORT}`));
