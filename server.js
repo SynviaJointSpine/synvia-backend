@@ -1,149 +1,136 @@
-const express = require('express');
-const cors = require('cors');
-const twilio = require('twilio');
+/* ═══════════════════════════════════════════════════════════
+   SYNVIA BACKEND — /update-lead endpoint
+   Writes VIP flags, Qualifier Score, Consult Score, and
+   Consult Note back to the "P1M Leads" tab of the GHL sheet.
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+   PASTE INTO: synvia-backend (GitHub: SynviaJointSpine/synvia-backend)
+   Add to your existing Express server file (same one with /send-sms
+   and /claude). Requires: npm install googleapis
 
-const PORT = process.env.PORT || 3000;
+   ENV VARS to add on Render (Dashboard → synvia-backend → Environment):
+     GOOGLE_SA_EMAIL  = service account email (ends in .iam.gserviceaccount.com)
+     GOOGLE_SA_KEY    = service account private key (paste full key incl.
+                        -----BEGIN PRIVATE KEY----- block; Render handles
+                        multiline values — or replace newlines with \n)
 
-const getClient = () => twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+   SETUP (one time, ~5 min):
+   1. console.cloud.google.com → create/select a project
+   2. APIs & Services → Enable "Google Sheets API"
+   3. IAM & Admin → Service Accounts → Create ("synvia-sheets-writer")
+   4. On the new account: Keys → Add Key → JSON → download
+   5. From the JSON: client_email → GOOGLE_SA_EMAIL, private_key → GOOGLE_SA_KEY
+   6. Open the GHL sheet → Share → add the service account email as EDITOR
+   7. git push → Render auto-deploys
+═══════════════════════════════════════════════════════════ */
 
-// Health check
-app.get('/', (req, res) => {
-  res.json({ status: 'SYNVIA SMS Backend running', time: new Date().toISOString() });
-});
+const { google } = require('googleapis');
 
-// Send SMS to a lead
-app.post('/send-sms', async (req, res) => {
-  const { to, body, message } = req.body;
-  const text = body || message; // accept both field names (SYNVIA OS sends `message`)
-  if (!to || !text) return res.status(400).json({ error: 'Missing to or message body' });
+const LEADS_SHEET_ID = '1SI0gUor4T-JuQgOVoP6FxhwWYW7iaBBWbflT-jW_hnI';
+const LEADS_TAB_NAME = 'P1M Leads';
+
+// Columns the OS is allowed to write. Anything else is rejected.
+const WRITABLE_COLUMNS = ['VIP', 'Qualifier Score', 'Consult Score', 'Consult Note', 'Value'];
+
+function sheetsClient() {
+  const auth = new google.auth.JWT({
+    email: process.env.GOOGLE_SA_EMAIL,
+    key: (process.env.GOOGLE_SA_KEY || '').replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+  return google.sheets({ version: 'v4', auth });
+}
+
+const digits = (s) => String(s || '').replace(/\D/g, '');
+const colLetter = (i) => { // 0-based index → A1 column letters
+  let s = '';
+  i += 1;
+  while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
+  return s;
+};
+
+/* POST /update-lead
+   Body: { phone, lastName, firstName, fields: { "VIP": "TRUE", "Consult Score": "82", ... } }
+   Matches the row by phone digits (fallback: last+first name).
+   Auto-creates any missing header columns at the end of row 1. */
+app.post('/update-lead', async (req, res) => {
   try {
-    const msg = await getClient().messages.create({
-      from: process.env.TWILIO_PHONE,
-      to,
-      body: text,
+    const { phone, lastName, firstName, fields } = req.body || {};
+    if (!fields || typeof fields !== 'object' || !Object.keys(fields).length) {
+      return res.status(400).json({ success: false, error: 'No fields provided' });
+    }
+    const badKeys = Object.keys(fields).filter((k) => !WRITABLE_COLUMNS.includes(k));
+    if (badKeys.length) {
+      return res.status(400).json({ success: false, error: 'Field not writable: ' + badKeys.join(', ') });
+    }
+    if (!digits(phone) && !(lastName && firstName)) {
+      return res.status(400).json({ success: false, error: 'Need a phone or first+last name to match the row' });
+    }
+
+    const sheets = sheetsClient();
+
+    // Pull the whole tab once
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: LEADS_SHEET_ID,
+      range: `'${LEADS_TAB_NAME}'`,
     });
-    res.json({ sid: msg.sid, status: msg.status });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+    const rows = resp.data.values || [];
+    if (!rows.length) return res.status(500).json({ success: false, error: 'Sheet tab is empty' });
 
-// HOT lead alert — SMS + email
-app.post('/notify', async (req, res) => {
-  const lead = req.body;
-  const results = {};
+    const headers = rows[0].map((h) => String(h || '').trim());
 
-  // SMS to lead
-  if (lead.phone) {
-    const cleaned = lead.phone.replace(/\D/g, '');
-    const toNumber = cleaned.startsWith('1') ? '+' + cleaned : '+1' + cleaned;
-    const painLabels = { knee:'knee', hip:'hip', shoulder:'shoulder', spine:'back/spine', multiple:'joint' };
-    const smsBody = `Hi ${lead.name.split(' ')[0]}, this is SYNVIA Joint & Spine in North Dallas. We received your request about your ${painLabels[lead.pain] || 'joint'} pain and want to get you scheduled right away. Do you have 10 minutes today to speak with our coordinator? Reply YES and we'll call you now. Reply STOP to opt out.`;
-    try {
-      const msg = await getClient().messages.create({
-        from: process.env.TWILIO_PHONE,
-        to: toNumber,
-        body: smsBody,
+    // Ensure every requested field has a header column; create missing ones
+    const headerWrites = [];
+    for (const key of Object.keys(fields)) {
+      if (!headers.includes(key)) {
+        headers.push(key);
+        headerWrites.push({
+          range: `'${LEADS_TAB_NAME}'!${colLetter(headers.length - 1)}1`,
+          values: [[key]],
+        });
+      }
+    }
+    if (headerWrites.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: LEADS_SHEET_ID,
+        requestBody: { valueInputOption: 'RAW', data: headerWrites },
       });
-      results.sms = msg.sid;
-    } catch (e) {
-      results.sms_error = e.message;
     }
-  }
 
-  // Email via SendGrid
-  if (process.env.SENDGRID_API_KEY) {
-    const bucketColor = lead.bucket === 'HOT' ? '#E05252' : '#E09A30';
-    try {
-      const sgRes = await fetch('https://api.sendgrid.com/v3/mail/send', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.SENDGRID_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: process.env.ALERT_EMAIL }] }],
-          from: { email: process.env.FROM_EMAIL, name: 'SYNVIA CRM' },
-          subject: `🔥 ${lead.bucket} Lead: ${lead.name} (Score ${lead.score}) — SYNVIA`,
-          content: [{
-            type: 'text/html',
-            value: `<div style="font-family:Arial,sans-serif;max-width:560px">
-              <div style="background:#0B1829;padding:20px"><h1 style="color:#C9A84C;margin:0">SYNVIA Joint & Spine</h1></div>
-              <div style="padding:24px">
-                <div style="background:${bucketColor}22;border:1px solid ${bucketColor};border-radius:8px;padding:12px 16px;margin-bottom:16px">
-                  <strong style="color:${bucketColor};font-size:16px">🔥 ${lead.bucket} LEAD — Score: ${lead.score}/100</strong>
-                </div>
-                <table style="width:100%;font-size:14px;border-collapse:collapse">
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee;width:35%">Name</td><td style="padding:7px 0;border-bottom:1px solid #eee;font-weight:600">${lead.name}</td></tr>
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee">Phone</td><td style="padding:7px 0;border-bottom:1px solid #eee;font-weight:600">${lead.phone}</td></tr>
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee">Pain area</td><td style="padding:7px 0;border-bottom:1px solid #eee">${lead.pain}</td></tr>
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee">Timeline</td><td style="padding:7px 0;border-bottom:1px solid #eee">${lead.timeline}</td></tr>
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee">Budget</td><td style="padding:7px 0;border-bottom:1px solid #eee">${lead.budget}</td></tr>
-                  <tr><td style="padding:7px 0;color:#666;border-bottom:1px solid #eee">Source</td><td style="padding:7px 0;border-bottom:1px solid #eee">${lead.source}</td></tr>
-                  ${lead.notes ? `<tr><td style="padding:7px 0;color:#666" valign="top">Notes</td><td style="padding:7px 0">${lead.notes}</td></tr>` : ''}
-                </table>
-                <p style="margin-top:20px;font-size:12px;color:#999">Call within 5 minutes for best close rate. — SYNVIA CRM</p>
-              </div>
-            </div>`
-          }],
-        }),
-      });
-      results.email = sgRes.ok ? 'sent' : `error ${sgRes.status}`;
-    } catch (e) {
-      results.email_error = e.message;
+    // Find the row: phone digits first, then name fallback
+    const phoneCol = headers.indexOf('Phone');
+    const lnCol = headers.indexOf('Last Name');
+    const fnCol = headers.indexOf('First Name');
+    const want = digits(phone);
+    let rowIdx = -1; // 0-based within rows[]
+    for (let i = 1; i < rows.length; i++) {
+      if (want && phoneCol >= 0 && digits(rows[i][phoneCol]) === want) { rowIdx = i; break; }
     }
-  }
-
-  res.json({ success: true, results });
-});
-
-// Receive inbound SMS from Twilio webhook
-app.post('/inbound-sms', (req, res) => {
-  const { From, Body } = req.body;
-  console.log(`Inbound SMS from ${From}: ${Body}`);
-  // Just acknowledge — CRM polls for new messages
-  res.set('Content-Type', 'text/xml');
-  res.send('<Response></Response>');
-});
-
-
-// ─── Claude AI proxy — keeps the Anthropic key server-side ─────────────────
-app.post('/claude', async (req, res) => {
-  try {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: { message: 'ANTHROPIC_API_KEY not set in Render env' } });
+    if (rowIdx === -1 && lastName && firstName && lnCol >= 0 && fnCol >= 0) {
+      const ln = String(lastName).trim().toLowerCase();
+      const fn = String(firstName).trim().toLowerCase();
+      for (let i = 1; i < rows.length; i++) {
+        if (String(rows[i][lnCol] || '').trim().toLowerCase() === ln &&
+            String(rows[i][fnCol] || '').trim().toLowerCase() === fn) { rowIdx = i; break; }
+      }
     }
-    const { model, max_tokens, system, messages } = req.body || {};
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: { message: 'messages array required' } });
+    if (rowIdx === -1) {
+      return res.status(404).json({ success: false, error: 'Lead not found in sheet (no phone/name match)' });
     }
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: model || 'claude-sonnet-4-6',
-        max_tokens: Math.min(Number(max_tokens) || 2000, 4000), // cost guard
-        system: system || '',
-        messages
-      })
+
+    // Write each field to its column on the matched row
+    const sheetRow = rowIdx + 1; // 1-based A1 row
+    const data = Object.entries(fields).map(([key, value]) => ({
+      range: `'${LEADS_TAB_NAME}'!${colLetter(headers.indexOf(key))}${sheetRow}`,
+      values: [[String(value)]],
+    }));
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: LEADS_SHEET_ID,
+      requestBody: { valueInputOption: 'RAW', data },
     });
-    const data = await resp.json();
-    res.status(resp.status).json(data);
-  } catch (e) {
-    res.status(502).json({ error: { message: 'Claude proxy error: ' + e.message } });
+
+    return res.json({ success: true, updated: Object.keys(fields), row: sheetRow });
+  } catch (err) {
+    console.error('update-lead error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
-
-app.listen(PORT, () => console.log(`SYNVIA backend running on port ${PORT}`));
