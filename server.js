@@ -20,7 +20,7 @@ app.get('/', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  ANTHROPIC PROXY — existing endpoint
+// ANTHROPIC PROXY — existing endpoint
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/claude', async (req, res) => {
   try {
@@ -41,7 +41,7 @@ app.post('/api/claude', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  TWILIO SMS — existing endpoint
+// TWILIO SMS — existing endpoint
 // ═══════════════════════════════════════════════════════════════
 app.post('/send-sms', async (req, res) => {
   const { to, body, from } = req.body;
@@ -59,21 +59,58 @@ app.post('/send-sms', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-//  GHL OAUTH — get an access token via GHL's OAuth flow
-//  No private API key needed — uses your GHL login credentials
+// OS SYNC — Google Sheets write bridge
+// POST /sheets-write
+// Proxies to the Apps Script /exec URL stored in APPS_SCRIPT_URL env var.
+// Accepts any JSON body and forwards it straight through.
+// Optional header: x-shared-secret (must match SHARED_SECRET env var if set)
 // ═══════════════════════════════════════════════════════════════
+app.post('/sheets-write', async (req, res) => {
+  try {
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!appsScriptUrl) {
+      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL env var not set on Render' });
+    }
 
-// Step 1: Redirect user to GHL's OAuth consent screen
-// Visit: https://synvia-backend.onrender.com/ghl/auth
+    // Optional shared-secret auth check
+    const sharedSecret = process.env.SHARED_SECRET;
+    if (sharedSecret) {
+      const incoming = req.headers['x-shared-secret'] || req.body?.secret;
+      if (incoming !== sharedSecret) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+    }
+
+    const payload = req.body;
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    res.status(response.status).json({ success: response.ok, ...data });
+  } catch (err) {
+    console.error('sheets-write error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GHL OAUTH — get an access token via GHL's OAuth flow
+// ═══════════════════════════════════════════════════════════════
 app.get('/ghl/auth', (req, res) => {
-  const clientId     = process.env.GHL_CLIENT_ID;
-  const redirectUri  = process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback';
-  const scope        = 'contacts.readonly contacts.write conversations/message.write workflows.readonly calendars/events.readonly locations.readonly';
-  const authUrl      = `https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${clientId}&scope=${encodeURIComponent(scope)}`;
+  const clientId = process.env.GHL_CLIENT_ID;
+  const redirectUri = process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback';
+  const scope = 'contacts.readonly contacts.write conversations/message.write workflows.readonly calendars/events.readonly locations.readonly';
+  const authUrl = `https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${clientId}&scope=${encodeURIComponent(scope)}`;
   res.redirect(authUrl);
 });
 
-// Step 2: GHL redirects back here with a ?code= param
 app.get('/ghl/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('No code received from GHL');
@@ -82,21 +119,19 @@ app.get('/ghl/callback', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type:    'authorization_code',
+        grant_type: 'authorization_code',
         code,
-        client_id:     process.env.GHL_CLIENT_ID,
+        client_id: process.env.GHL_CLIENT_ID,
         client_secret: process.env.GHL_CLIENT_SECRET,
-        redirect_uri:  process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback',
+        redirect_uri: process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback',
       }),
     });
     const data = await resp.json();
     if (data.access_token) {
-      // Store tokens in memory (persists until Render restarts)
-      // For production use a DB — but this works on Render's free tier
-      global.GHL_ACCESS_TOKEN  = data.access_token;
+      global.GHL_ACCESS_TOKEN = data.access_token;
       global.GHL_REFRESH_TOKEN = data.refresh_token;
-      global.GHL_LOCATION_ID   = data.locationId || process.env.GHL_LOCATION_ID;
-      global.GHL_TOKEN_EXPIRY  = Date.now() + (data.expires_in * 1000);
+      global.GHL_LOCATION_ID = data.locationId || process.env.GHL_LOCATION_ID;
+      global.GHL_TOKEN_EXPIRY = Date.now() + (data.expires_in * 1000);
       console.log('GHL OAuth success. Location:', global.GHL_LOCATION_ID);
       res.send(`
         <html><body style="font-family:sans-serif;padding:40px;background:#0F1E3D;color:#F5F1E8">
@@ -115,7 +150,6 @@ app.get('/ghl/callback', async (req, res) => {
   }
 });
 
-// ── Token refresh helper ──────────────────────────────────────
 async function refreshGHLToken() {
   if (!global.GHL_REFRESH_TOKEN) return false;
   try {
@@ -123,17 +157,17 @@ async function refreshGHLToken() {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type:    'refresh_token',
+        grant_type: 'refresh_token',
         refresh_token: global.GHL_REFRESH_TOKEN,
-        client_id:     process.env.GHL_CLIENT_ID,
+        client_id: process.env.GHL_CLIENT_ID,
         client_secret: process.env.GHL_CLIENT_SECRET,
       }),
     });
     const data = await resp.json();
     if (data.access_token) {
-      global.GHL_ACCESS_TOKEN  = data.access_token;
+      global.GHL_ACCESS_TOKEN = data.access_token;
       global.GHL_REFRESH_TOKEN = data.refresh_token || global.GHL_REFRESH_TOKEN;
-      global.GHL_TOKEN_EXPIRY  = Date.now() + (data.expires_in * 1000);
+      global.GHL_TOKEN_EXPIRY = Date.now() + (data.expires_in * 1000);
       console.log('GHL token refreshed');
       return true;
     }
@@ -141,9 +175,7 @@ async function refreshGHLToken() {
   return false;
 }
 
-// ── GHL API proxy helper ──────────────────────────────────────
 async function ghlApi(path, opts = {}) {
-  // Refresh token if expiring in < 5 minutes
   if (global.GHL_TOKEN_EXPIRY && Date.now() > global.GHL_TOKEN_EXPIRY - 300000) {
     await refreshGHLToken();
   }
@@ -152,8 +184,8 @@ async function ghlApi(path, opts = {}) {
   const res = await fetch(url, {
     headers: {
       'Authorization': 'Bearer ' + global.GHL_ACCESS_TOKEN,
-      'Content-Type':  'application/json',
-      'Version':       '2021-07-28',
+      'Content-Type': 'application/json',
+      'Version': '2021-07-28',
       ...opts.headers,
     },
     ...opts,
@@ -165,17 +197,11 @@ async function ghlApi(path, opts = {}) {
   return res.json();
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  GHL ACTION ENDPOINT — called by SYNVIA OS
-//  POST /ghl/action
-//  Body: { type, contact_name, contact_phone, contact_email, ...fields }
-// ═══════════════════════════════════════════════════════════════
 app.post('/ghl/action', async (req, res) => {
   const { type, contact_phone, contact_email, contact_name } = req.body;
   const locId = global.GHL_LOCATION_ID || process.env.GHL_LOCATION_ID;
 
   try {
-    // ── Find contact by phone or email ──
     let contactId = null;
     const searchVal = contact_phone || contact_email;
     if (searchVal) {
@@ -192,110 +218,66 @@ app.post('/ghl/action', async (req, res) => {
     let result = {};
 
     switch (type) {
-
       case 'test':
         result = { message: 'SYNVIA OS → GHL connection working', timestamp: new Date().toISOString() };
         break;
-
       case 'move_stage': {
-        // Update contact's pipeline stage via opportunity or custom field
         const { new_stage } = req.body;
-        result = await ghlApi(`/contacts/${contactId}`, {
-          method: 'PUT',
-          body: JSON.stringify({ tags: [new_stage] }),
-        });
+        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: [new_stage] }) });
         result = { success: true, stage: new_stage, contact: contact_name };
         break;
       }
-
       case 'fire_workflow': {
         const { workflow, workflow_name } = req.body;
         const wfId = process.env['GHL_WF_' + workflow.toUpperCase()];
-        if (!wfId) {
-          return res.status(400).json({
-            success: false,
-            error: `Workflow env var GHL_WF_${workflow.toUpperCase()} not set in Render`
-          });
-        }
-        result = await ghlApi(`/contacts/${contactId}/workflow/${wfId}`, {
-          method: 'POST',
-          body: JSON.stringify({}),
-        });
+        if (!wfId) return res.status(400).json({ success: false, error: `Workflow env var GHL_WF_${workflow.toUpperCase()} not set in Render` });
+        await ghlApi(`/contacts/${contactId}/workflow/${wfId}`, { method: 'POST', body: JSON.stringify({}) });
         result = { success: true, workflow: workflow_name || workflow, contact: contact_name };
         break;
       }
-
       case 'send_sms': {
         const { message } = req.body;
-        result = await ghlApi('/conversations/messages', {
-          method: 'POST',
-          body: JSON.stringify({
-            type: 'SMS',
-            contactId,
-            message,
-          }),
-        });
+        await ghlApi('/conversations/messages', { method: 'POST', body: JSON.stringify({ type: 'SMS', contactId, message }) });
         result = { success: true, sms: 'sent', contact: contact_name };
         break;
       }
-
       case 'add_note': {
         const { note } = req.body;
-        result = await ghlApi(`/contacts/${contactId}/notes`, {
-          method: 'POST',
-          body: JSON.stringify({ body: note }),
-        });
+        await ghlApi(`/contacts/${contactId}/notes`, { method: 'POST', body: JSON.stringify({ body: note }) });
         result = { success: true, note: 'added', contact: contact_name };
         break;
       }
-
       case 'add_tag': {
         const { tag } = req.body;
         const contact = await ghlApi(`/contacts/${contactId}`);
-        const existingTags = contact.contact?.tags || [];
-        const newTags = [...new Set([...existingTags, tag])];
-        await ghlApi(`/contacts/${contactId}`, {
-          method: 'PUT',
-          body: JSON.stringify({ tags: newTags }),
-        });
+        const newTags = [...new Set([...(contact.contact?.tags || []), tag])];
+        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: newTags }) });
         result = { success: true, tag, contact: contact_name };
         break;
       }
-
       case 'remove_tag': {
         const { tag } = req.body;
         const contact = await ghlApi(`/contacts/${contactId}`);
         const filtered = (contact.contact?.tags || []).filter(t => t !== tag);
-        await ghlApi(`/contacts/${contactId}`, {
-          method: 'PUT',
-          body: JSON.stringify({ tags: filtered }),
-        });
+        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: filtered }) });
         result = { success: true, removed_tag: tag, contact: contact_name };
         break;
       }
-
       case 'get_contacts': {
         const { limit = 100, query = '' } = req.body;
-        result = await ghlApi(
-          `/contacts/?locationId=${locId}&limit=${limit}${query ? '&query=' + encodeURIComponent(query) : ''}`
-        );
+        result = await ghlApi(`/contacts/?locationId=${locId}&limit=${limit}${query ? '&query=' + encodeURIComponent(query) : ''}`);
         break;
       }
-
       case 'get_appointments': {
         const today = new Date().toISOString().split('T')[0];
-        const end   = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
-        result = await ghlApi(
-          `/calendars/events?locationId=${locId}&startTime=${today}&endTime=${end}&limit=50`
-        );
+        const end = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+        result = await ghlApi(`/calendars/events?locationId=${locId}&startTime=${today}&endTime=${end}&limit=50`);
         break;
       }
-
       case 'get_workflows': {
         result = await ghlApi(`/workflows/?locationId=${locId}`);
         break;
       }
-
       default:
         return res.status(400).json({ success: false, error: `Unknown action type: ${type}` });
     }
@@ -308,13 +290,12 @@ app.post('/ghl/action', async (req, res) => {
   }
 });
 
-// ── GHL connection status ────────────────────────────────────
 app.get('/ghl/status', (req, res) => {
   res.json({
-    connected:   !!global.GHL_ACCESS_TOKEN,
-    locationId:  global.GHL_LOCATION_ID || null,
+    connected: !!global.GHL_ACCESS_TOKEN,
+    locationId: global.GHL_LOCATION_ID || null,
     tokenExpiry: global.GHL_TOKEN_EXPIRY ? new Date(global.GHL_TOKEN_EXPIRY).toISOString() : null,
-    authUrl:     'https://synvia-backend.onrender.com/ghl/auth',
+    authUrl: 'https://synvia-backend.onrender.com/ghl/auth',
   });
 });
 
