@@ -298,6 +298,52 @@ app.get('/ghl/status', (req, res) => {
     authUrl: 'https://synvia-backend.onrender.com/ghl/auth',
   });
 });
+// ── Intake Submission ──────────────────────────────────────────────────────
+// Receives patient intake form submissions from https://synviaintakeform.netlify.app
+// and forwards them to the OS Sync Apps Script to create an alert in SYNVIA OS.
+app.post('/intake-submit', async (req, res) => {
+    try {
+          const payload = {
+                  type: 'INTAKE_SUBMISSION',
+                  status: 'UNREAD',
+                  submittedAt: new Date().toISOString(),
+                  source: 'synviaintakeform.netlify.app',
+                  patient: req.body,
+          };
+
+          console.log('New intake received', payload);
+
+          // TODO: Auto-create patient shell in Patient Records Portal
+          // TODO: Auto-populate Patient History from intake fields
+          // TODO: Auto-sync demographics to GHL contact record
+          // TODO: Auto-create Intake Alert in SYNVIA OS Alerts page
+          // TODO: Auto-create Patient Record with intake as first entry
+
+          // Forward payload to OS Sync Apps Script to create the alert
+          const scriptUrl = process.env.APPS_SCRIPT_URL;
+          if (!scriptUrl) {
+                  console.error('APPS_SCRIPT_URL is not set');
+                  return res.status(500).json({ success: false, message: 'APPS_SCRIPT_URL not configured' });
+          }
+
+          const scriptRes = await fetch(scriptUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload),
+          });
+
+          if (!scriptRes.ok) {
+                  const errText = await scriptRes.text();
+                  console.error('Apps Script error:', errText);
+                  return res.status(502).json({ success: false, message: 'Failed to forward intake to Apps Script', detail: errText });
+          }
+
+          res.json({ success: true, message: 'Intake submitted and alert created' });
+    } catch (err) {
+          console.error('Intake submit error:', err.message);
+          res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.listen(PORT, () => {
   console.log(`SYNVIA Backend running on port ${PORT}`);
