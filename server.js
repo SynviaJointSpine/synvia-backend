@@ -60,10 +60,6 @@ app.post('/send-sms', async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // OS SYNC — Google Sheets write bridge
-// POST /sheets-write
-// Proxies to the Apps Script /exec URL stored in APPS_SCRIPT_URL env var.
-// Accepts any JSON body and forwards it straight through.
-// Optional header: x-shared-secret (must match SHARED_SECRET env var if set)
 // ═══════════════════════════════════════════════════════════════
 app.post('/sheets-write', async (req, res) => {
   try {
@@ -72,7 +68,6 @@ app.post('/sheets-write', async (req, res) => {
       return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL env var not set on Render' });
     }
 
-    // Optional shared-secret auth check
     const sharedSecret = process.env.SHARED_SECRET;
     if (sharedSecret) {
       const incoming = req.headers['x-shared-secret'] || req.body?.secret;
@@ -101,7 +96,139 @@ app.post('/sheets-write', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// GHL OAUTH — get an access token via GHL's OAuth flow
+// PATIENT EHR — Save & Load
+// All chart data routes through the Apps Script bridge to the
+// "Patient EHR" Google Sheet (separate doc from OS SYNC).
+// ═══════════════════════════════════════════════════════════════
+
+// POST /ehr/save  — upsert a patient chart
+// Body: { patientId, patientMeta: {...}, chartData: {...}, soapSessions: [...], evalSessions: [...] }
+app.post('/ehr/save', async (req, res) => {
+  try {
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!appsScriptUrl) {
+      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
+    }
+
+    const { patientId, patientMeta, chartData, soapSessions, evalSessions } = req.body;
+    if (!patientId) return res.status(400).json({ success: false, error: 'patientId required' });
+
+    const payload = {
+      type: 'EHR_SAVE',
+      patientId,
+      patientMeta,
+      chartData,
+      soapSessions,
+      evalSessions,
+      savedAt: new Date().toISOString(),
+    };
+
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    console.log(`EHR save: patient ${patientId}`, response.ok ? 'OK' : 'FAIL');
+    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
+  } catch (err) {
+    console.error('EHR save error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /ehr/load/:patientId  — load one patient chart
+app.get('/ehr/load/:patientId', async (req, res) => {
+  try {
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!appsScriptUrl) {
+      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
+    }
+
+    const { patientId } = req.params;
+    const payload = { type: 'EHR_LOAD', patientId };
+
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
+  } catch (err) {
+    console.error('EHR load error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /ehr/all  — load all patient records (for dashboard)
+app.get('/ehr/all', async (req, res) => {
+  try {
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!appsScriptUrl) {
+      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
+    }
+
+    const payload = { type: 'EHR_LOAD_ALL' };
+
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
+  } catch (err) {
+    console.error('EHR load-all error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /ehr/delete/:patientId  — soft-delete a patient chart
+app.delete('/ehr/delete/:patientId', async (req, res) => {
+  try {
+    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!appsScriptUrl) {
+      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
+    }
+
+    const payload = { type: 'EHR_DELETE', patientId: req.params.patientId };
+
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
+  } catch (err) {
+    console.error('EHR delete error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GHL OAUTH
 // ═══════════════════════════════════════════════════════════════
 app.get('/ghl/auth', (req, res) => {
   const clientId = process.env.GHL_CLIENT_ID;
@@ -298,51 +425,43 @@ app.get('/ghl/status', (req, res) => {
     authUrl: 'https://synvia-backend.onrender.com/ghl/auth',
   });
 });
-// ── Intake Submission ──────────────────────────────────────────────────────
-// Receives patient intake form submissions from https://synviaintakeform.netlify.app
-// and forwards them to the OS Sync Apps Script to create an alert in SYNVIA OS.
+
+// ── Intake Submission ─────────────────────────────────────────
 app.post('/intake-submit', async (req, res) => {
-    try {
-          const payload = {
-                  type: 'INTAKE_SUBMISSION',
-                  status: 'UNREAD',
-                  submittedAt: new Date().toISOString(),
-                  source: 'synviaintakeform.netlify.app',
-                  patient: req.body,
-          };
+  try {
+    const payload = {
+      type: 'INTAKE_SUBMISSION',
+      status: 'UNREAD',
+      submittedAt: new Date().toISOString(),
+      source: 'synviaintakeform.netlify.app',
+      patient: req.body,
+    };
 
-          console.log('New intake received', payload);
+    console.log('New intake received', payload);
 
-          // TODO: Auto-create patient shell in Patient Records Portal
-          // TODO: Auto-populate Patient History from intake fields
-          // TODO: Auto-sync demographics to GHL contact record
-          // TODO: Auto-create Intake Alert in SYNVIA OS Alerts page
-          // TODO: Auto-create Patient Record with intake as first entry
-
-          // Forward payload to OS Sync Apps Script to create the alert
-          const scriptUrl = process.env.APPS_SCRIPT_URL;
-          if (!scriptUrl) {
-                  console.error('APPS_SCRIPT_URL is not set');
-                  return res.status(500).json({ success: false, message: 'APPS_SCRIPT_URL not configured' });
-          }
-
-          const scriptRes = await fetch(scriptUrl, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
-          });
-
-          if (!scriptRes.ok) {
-                  const errText = await scriptRes.text();
-                  console.error('Apps Script error:', errText);
-                  return res.status(502).json({ success: false, message: 'Failed to forward intake to Apps Script', detail: errText });
-          }
-
-          res.json({ success: true, message: 'Intake submitted and alert created' });
-    } catch (err) {
-          console.error('Intake submit error:', err.message);
-          res.status(500).json({ success: false, message: err.message });
+    const scriptUrl = process.env.APPS_SCRIPT_URL;
+    if (!scriptUrl) {
+      console.error('APPS_SCRIPT_URL is not set');
+      return res.status(500).json({ success: false, message: 'APPS_SCRIPT_URL not configured' });
     }
+
+    const scriptRes = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!scriptRes.ok) {
+      const errText = await scriptRes.text();
+      console.error('Apps Script error:', errText);
+      return res.status(502).json({ success: false, message: 'Failed to forward intake to Apps Script', detail: errText });
+    }
+
+    res.json({ success: true, message: 'Intake submitted and alert created' });
+  } catch (err) {
+    console.error('Intake submit error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 app.listen(PORT, () => {
