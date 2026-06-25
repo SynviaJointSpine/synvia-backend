@@ -1,471 +1,264 @@
-const express = require('express');
-const cors = require('cors');
-const twilio = require('twilio');
+'use strict';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+const PDFDocument = require('pdfkit');
 
-const PORT = process.env.PORT || 3000;
+// ── SJS color palette ──────────────────────────────────────────
+const NAVY  = '#0F2550';
+const MID   = '#4A5568';
+const RULE  = '#CBD5E0';
+const RED   = '#C0392B';
+const BLACK = '#1A202C';
 
-const getClient = () => twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+// ── Layout constants (points) ──────────────────────────────────
+const LM   = 0.65 * 72;   // left margin
+const RM   = 7.95 * 72;   // right margin
+const TM   = (11 - 0.55) * 72;  // top margin (from bottom of page)
+const BM   = 0.55 * 72;
+const PW   = 8.5 * 72;
+const PH   = 11  * 72;
+const CW   = RM - LM;
 
-// ── Health check ──────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: 'SYNVIA SMS Backend running', time: new Date().toISOString() });
-});
+/**
+ * Generate SJS intake PDF buffer from Netlify form data.
+ * @param {Object} data  — parsed Netlify form fields
+ * @param {Buffer} logoBuffer — the SYNVIA logo PNG as a buffer
+ * @returns {Promise<Buffer>}
+ */
+function generateIntakePDF(data, logoBuffer) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'LETTER', margin: 0, info: {
+      Title: `SYNVIA Intake — ${data.firstName || ''} ${data.lastName || ''}`,
+      Author: 'SYNVIA Joint & Spine',
+    }});
 
-// ═══════════════════════════════════════════════════════════════
-// ANTHROPIC PROXY — existing endpoint
-// ═══════════════════════════════════════════════════════════════
-app.post('/api/claude', async (req, res) => {
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(req.body),
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    const chunks = [];
+    doc.on('data', c => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
 
-// ═══════════════════════════════════════════════════════════════
-// TWILIO SMS — existing endpoint
-// ═══════════════════════════════════════════════════════════════
-app.post('/send-sms', async (req, res) => {
-  const { to, body, from } = req.body;
-  try {
-    const client = getClient();
-    const message = await client.messages.create({
-      body,
-      from: from || process.env.TWILIO_FROM_NUMBER,
-      to,
-    });
-    res.json({ success: true, sid: message.sid });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    // ── helpers ─────────────────────────────────────────────────
+    const y = () => PH - doc.y;   // PDFKit y=0 is top; convert for mental model
 
-// ═══════════════════════════════════════════════════════════════
-// OS SYNC — Google Sheets write bridge
-// ═══════════════════════════════════════════════════════════════
-app.post('/sheets-write', async (req, res) => {
-  try {
-    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!appsScriptUrl) {
-      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL env var not set on Render' });
+    function hline(yPos, opts = {}) {
+      const { x1 = LM, x2 = RM, w = 0.4, color = RULE } = opts;
+      doc.save().strokeColor(color).lineWidth(w).moveTo(x1, yPos).lineTo(x2, yPos).stroke().restore();
     }
 
-    const sharedSecret = process.env.SHARED_SECRET;
-    if (sharedSecret) {
-      const incoming = req.headers['x-shared-secret'] || req.body?.secret;
-      if (incoming !== sharedSecret) {
-        return res.status(401).json({ success: false, error: 'Unauthorized' });
-      }
+    function cap(xPos, yPos, text) {
+      doc.save().font('Helvetica').fontSize(6.5).fillColor(MID)
+         .text(text.toUpperCase(), xPos, yPos, { lineBreak: false }).restore();
     }
 
-    const payload = req.body;
-    const response = await fetch(appsScriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-    });
-
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    res.status(response.status).json({ success: response.ok, ...data });
-  } catch (err) {
-    console.error('sheets-write error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════
-// PATIENT EHR — Save & Load
-// All chart data routes through the Apps Script bridge to the
-// "Patient EHR" Google Sheet (separate doc from OS SYNC).
-// ═══════════════════════════════════════════════════════════════
-
-// POST /ehr/save  — upsert a patient chart
-// Body: { patientId, patientMeta: {...}, chartData: {...}, soapSessions: [...], evalSessions: [...] }
-app.post('/ehr/save', async (req, res) => {
-  try {
-    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!appsScriptUrl) {
-      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
+    function val(xPos, yPos, text, size = 9.5) {
+      doc.save().font('Helvetica-Bold').fontSize(size).fillColor(BLACK)
+         .text(String(text || '—'), xPos, yPos, { lineBreak: false }).restore();
     }
 
-    const { patientId, patientMeta, chartData, soapSessions, evalSessions } = req.body;
-    if (!patientId) return res.status(400).json({ success: false, error: 'patientId required' });
+    function sectionHeader(yPos, title) {
+      hline(yPos, { w: 0.5, color: NAVY });
+      doc.save().font('Helvetica-Bold').fontSize(7).fillColor(NAVY)
+         .text(title.toUpperCase(), LM, yPos + 3, { lineBreak: false }).restore();
+      return yPos + 18;
+    }
 
-    const payload = {
-      type: 'EHR_SAVE',
-      patientId,
-      patientMeta,
-      chartData,
-      soapSessions,
-      evalSessions,
-      savedAt: new Date().toISOString(),
+    function sep(yPos) {
+      hline(yPos, { w: 0.3, color: RULE });
+      return yPos + 12;
+    }
+
+    // shorthand for "or dash if empty"
+    const d = v => (v && String(v).trim()) ? String(v).trim() : '—';
+
+    // ── derived fields ───────────────────────────────────────────
+    const patientName = `${d(data.firstName)} ${d(data.lastName)}`.trim();
+    const dob = d(data.dob);
+    const address = [data.street, data.city, data.state, data.zip].filter(Boolean).join(', ');
+    const submittedAt = data.submittedAt
+      ? new Date(data.submittedAt).toLocaleDateString('en-US')
+      : new Date().toLocaleDateString('en-US');
+
+    // tried / activities / commPref may come as arrays or newline strings
+    const listField = v => {
+      if (!v) return '—';
+      const arr = Array.isArray(v) ? v : String(v).split(/[\n\r]+/);
+      const cleaned = arr.map(s => s.replace(/^[\s\-·]+/, '').trim()).filter(Boolean);
+      return cleaned.length ? cleaned.join('  ·  ') : '—';
     };
 
-    const response = await fetch(appsScriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
+    // ── START DRAWING ────────────────────────────────────────────
+    let curY = 0.55 * 72;  // top of page (PDFKit coords, 0=top)
+
+    // ── LOGO ────────────────────────────────────────────────────
+    const logoH = 0.55 * 72;
+    const logoW = logoH * (1542 / 424);  // cropped aspect ratio
+    doc.image(logoBuffer, LM, curY, { width: logoW, height: logoH });
+
+    // right-side form label
+    doc.save().font('Helvetica').fontSize(8).fillColor(MID)
+       .text('Patient Intake & Health History', 0, curY, { align: 'right', width: RM, lineBreak: false })
+       .text(submittedAt, 0, curY + 13, { align: 'right', width: RM, lineBreak: false })
+       .restore();
+
+    // navy divider under header
+    curY += logoH + 8;
+    hline(curY, { w: 1.2, color: NAVY });
+    curY += 16;
+
+    // ── PATIENT BLOCK ────────────────────────────────────────────
+    doc.save().font('Helvetica-Bold').fontSize(14).fillColor(NAVY)
+       .text(patientName, LM, curY, { lineBreak: false }).restore();
+
+    const dobLine = `DOB ${dob}  ·  ${d(data.gender)}  ·  ${d(data.marital)}`;
+    doc.save().font('Helvetica').fontSize(8.5).fillColor(MID)
+       .text(dobLine, 0, curY, { align: 'right', width: RM, lineBreak: false }).restore();
+    curY += 16;
+
+    doc.save().font('Helvetica').fontSize(8.5).fillColor(MID)
+       .text(`${d(data.cell)}  ·  ${d(data.email)}  ·  ${d(address)}`, LM, curY, { lineBreak: false }).restore();
+    curY += 13;
+
+    doc.save().font('Helvetica').fontSize(8.5).fillColor(MID)
+       .text(`Emergency: ${d(data.emName)}  ${d(data.emPhone)}  ·  Employer: ${d(data.employer)}  ·  Referral: ${d(data.referral)}`, LM, curY, { lineBreak: false }).restore();
+    curY += 10;
+
+    hline(curY, { w: 0.4, color: RULE });
+    curY += 14;
+
+    // ── INSURANCE ───────────────────────────────────────────────
+    curY = sectionHeader(curY, 'Insurance');
+    const insFields = [
+      [LM,              'Coverage',   d(data.coverage)],
+      [LM + 79,         'Carrier',    d(data.insCompany)],
+      [LM + 187,        'State',      d(data.insState)],
+      [LM + 226,        'Member ID',  d(data.insMember)],
+      [LM + 338,        'Group',      d(data.insGroup)],
+      [LM + 382,        'Employer',   d(data.insEmployer)],
+    ];
+    insFields.forEach(([x, lb, v]) => { cap(x, curY, lb); val(x, curY + 10, v, 9); });
+    curY += 30;
+    curY = sep(curY);
+
+    // ── CHIEF COMPLAINT ─────────────────────────────────────────
+    curY = sectionHeader(curY, 'Chief Complaint');
+    cap(LM,           curY, 'Complaint'); val(LM,           curY + 10, d(data.chief), 9);
+    cap(LM + 144,     curY, 'Duration');  val(LM + 144,     curY + 10, d(data.duration), 9);
+    cap(LM + 245,     curY, 'Symptoms');  val(LM + 245,     curY + 10, d(data.symptoms), 9);
+    // pain score
+    cap(LM + 418, curY, 'Pain Score (0–10)');
+    doc.save().font('Helvetica-Bold').fontSize(22).fillColor(RED)
+       .text(d(data.pain) + ' / 10', LM + 418, curY + 6, { lineBreak: false }).restore();
+    curY += 38;
+    curY = sep(curY);
+
+    // ── MEDICAL HISTORY ─────────────────────────────────────────
+    curY = sectionHeader(curY, 'Medical History');
+    cap(LM,           curY, 'Conditions');  val(LM,           curY + 10, d(data.conditions), 9);
+    cap(LM + 130,     curY, 'Medications'); val(LM + 130,     curY + 10, d(data.medications), 9);
+    cap(LM + 260,     curY, 'Allergies');   val(LM + 260,     curY + 10, d(data.allergies), 9);
+    cap(LM + 390,     curY, 'Surgeries');   val(LM + 390,     curY + 10, d(data.surgeries), 9);
+    curY += 28;
+    cap(LM, curY, 'Family History'); val(LM, curY + 10, d(data.familyHistory), 9);
+    curY += 28;
+    curY = sep(curY);
+
+    // ── LIFESTYLE ───────────────────────────────────────────────
+    curY = sectionHeader(curY, 'Lifestyle & Habits');
+    const lifeCols = [
+      [LM,       'Activity', d(data.activity)],
+      [LM + 101, 'Sleep',    d(data.sleep)],
+      [LM + 180, 'Stress',   d(data.stress)],
+      [LM + 259, 'Tobacco',  d(data.tobacco)],
+      [LM + 324, 'Alcohol',  d(data.alcohol)],
+      [LM + 389, 'Exercise', d(data.exercise)],
+    ];
+    lifeCols.forEach(([x, lb, v]) => { cap(x, curY, lb); val(x, curY + 10, v, 9); });
+    curY += 30;
+    curY = sep(curY);
+
+    // ── PRIOR TREATMENT ─────────────────────────────────────────
+    curY = sectionHeader(curY, 'Prior Treatment');
+    cap(LM, curY, 'Previously tried');
+    val(LM, curY + 10, listField(data.tried), 9);
+    curY += 28;
+    cap(LM,       curY, 'Bone-on-bone');     val(LM,       curY + 10, d(data.boneOnBone), 9);
+    cap(LM + 115, curY, "Surgery rec'd");    val(LM + 115, curY + 10, d(data.surgeryRec), 9);
+    const seekingVal = (data.seekingHelp && data.seekingHelp !== 'boneOnBone') ? data.seekingHelp : d(data.chief);
+    cap(LM + 216, curY, 'Seeking help for'); val(LM + 216, curY + 10, seekingVal, 9);
+    curY += 30;
+    curY = sep(curY);
+
+    // ── GOALS ───────────────────────────────────────────────────
+    curY = sectionHeader(curY, 'Activities & Goals');
+    cap(LM, curY, 'Affected activities');
+    val(LM, curY + 10, listField(data.activities), 9);
+    curY += 28;
+    cap(LM, curY, 'Patient goals');
+    doc.save().font('Helvetica-Oblique').fontSize(9.5).fillColor(BLACK)
+       .text(`"${d(data.goals)}"`, LM, curY + 10, { lineBreak: false }).restore();
+    curY += 28;
+    curY = sep(curY);
+
+    // ── AUTHORIZED CONTACTS ─────────────────────────────────────
+    curY = sectionHeader(curY, 'Authorized Contacts & Communication');
+    cap(LM,       curY, 'Contact');      val(LM,       curY + 10, d(data.ac1Name), 9);
+    cap(LM + 144, curY, 'Relationship'); val(LM + 144, curY + 10, d(data.ac1Rel), 9);
+    cap(LM + 230, curY, 'Phone');        val(LM + 230, curY + 10, d(data.ac1Phone), 9);
+    cap(LM + 332, curY, 'May Discuss');  val(LM + 332, curY + 10, d(data.discuss), 9);
+    curY += 28;
+    cap(LM, curY, 'Preferred contact methods');
+    val(LM, curY + 10, listField(data.commPref), 9);
+    curY += 28;
+    curY = sep(curY);
+
+    // ── CONSENT & SIGNATURES ────────────────────────────────────
+    curY = sectionHeader(curY, 'Consent & Authorization');
+    const policies = [
+      ['HIPAA / Privacy',      data.init1],
+      ['Consent to Treatment', data.init2],
+      ['Financial Policy',     data.init3],
+      ['Release of Records',   data.init4],
+      ['Notice of Privacy',    data.init5],
+    ];
+    const colW = CW / 5;
+    policies.forEach(([policy, initial], i) => {
+      const x = LM + i * colW;
+      cap(x, curY, policy);
+      doc.save().font('Times-BoldItalic').fontSize(16).fillColor(NAVY)
+         .text(d(initial), x, curY + 11, { lineBreak: false }).restore();
+      doc.save().strokeColor(NAVY).lineWidth(0.6)
+         .moveTo(x, curY + 29).lineTo(x + 25, curY + 29).stroke().restore();
     });
+    curY += 46;
 
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    hline(curY, { w: 0.5, color: NAVY });
+    curY += 16;
 
-    console.log(`EHR save: patient ${patientId}`, response.ok ? 'OK' : 'FAIL');
-    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
-  } catch (err) {
-    console.error('EHR save error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    // Signature row
+    cap(LM, curY, 'Patient Signature');
+    doc.save().font('Times-BoldItalic').fontSize(26).fillColor(NAVY)
+       .text(d(data.signature), LM, curY + 10, { lineBreak: false }).restore();
+    doc.save().strokeColor(NAVY).lineWidth(0.6)
+       .moveTo(LM, curY + 38).lineTo(LM + 202, curY + 38).stroke().restore();
 
-// GET /ehr/load/:patientId  — load one patient chart
-app.get('/ehr/load/:patientId', async (req, res) => {
-  try {
-    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!appsScriptUrl) {
-      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
-    }
+    cap(LM + 230, curY, 'Printed Name');
+    val(LM + 230, curY + 14, d(data.printedName), 10);
 
-    const { patientId } = req.params;
-    const payload = { type: 'EHR_LOAD', patientId };
+    cap(LM + 389, curY, 'Date Signed');
+    val(LM + 389, curY + 14, d(data.sigDate), 10);
 
-    const response = await fetch(appsScriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-    });
+    curY += 55;
 
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    // ── FOOTER ──────────────────────────────────────────────────
+    const footerY = PH - BM - 14;
+    hline(footerY, { w: 0.5, color: NAVY });
+    doc.save().font('Helvetica').fontSize(7).fillColor(MID)
+       .text('SYNVIA Joint & Spine  ·  Confidential Patient Record  ·  Submitted electronically via synviaintakeform.netlify.app',
+             LM, footerY + 4, { lineBreak: false })
+       .text('Page 1 of 1', 0, footerY + 4, { align: 'right', width: RM, lineBreak: false })
+       .restore();
 
-    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
-  } catch (err) {
-    console.error('EHR load error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /ehr/all  — load all patient records (for dashboard)
-app.get('/ehr/all', async (req, res) => {
-  try {
-    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!appsScriptUrl) {
-      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
-    }
-
-    const payload = { type: 'EHR_LOAD_ALL' };
-
-    const response = await fetch(appsScriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-    });
-
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
-  } catch (err) {
-    console.error('EHR load-all error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// DELETE /ehr/delete/:patientId  — soft-delete a patient chart
-app.delete('/ehr/delete/:patientId', async (req, res) => {
-  try {
-    const appsScriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!appsScriptUrl) {
-      return res.status(500).json({ success: false, error: 'APPS_SCRIPT_URL not configured on Render' });
-    }
-
-    const payload = { type: 'EHR_DELETE', patientId: req.params.patientId };
-
-    const response = await fetch(appsScriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      redirect: 'follow',
-    });
-
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    res.status(response.ok ? 200 : 502).json({ success: response.ok, ...data });
-  } catch (err) {
-    console.error('EHR delete error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════
-// GHL OAUTH
-// ═══════════════════════════════════════════════════════════════
-app.get('/ghl/auth', (req, res) => {
-  const clientId = process.env.GHL_CLIENT_ID;
-  const redirectUri = process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback';
-  const scope = 'contacts.readonly contacts.write conversations/message.write workflows.readonly calendars/events.readonly locations.readonly';
-  const authUrl = `https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${clientId}&scope=${encodeURIComponent(scope)}`;
-  res.redirect(authUrl);
-});
-
-app.get('/ghl/callback', async (req, res) => {
-  const { code } = req.query;
-  if (!code) return res.status(400).send('No code received from GHL');
-  try {
-    const resp = await fetch('https://services.leadconnectorhq.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        client_id: process.env.GHL_CLIENT_ID,
-        client_secret: process.env.GHL_CLIENT_SECRET,
-        redirect_uri: process.env.GHL_REDIRECT_URI || 'https://synvia-backend.onrender.com/ghl/callback',
-      }),
-    });
-    const data = await resp.json();
-    if (data.access_token) {
-      global.GHL_ACCESS_TOKEN = data.access_token;
-      global.GHL_REFRESH_TOKEN = data.refresh_token;
-      global.GHL_LOCATION_ID = data.locationId || process.env.GHL_LOCATION_ID;
-      global.GHL_TOKEN_EXPIRY = Date.now() + (data.expires_in * 1000);
-      console.log('GHL OAuth success. Location:', global.GHL_LOCATION_ID);
-      res.send(`
-        <html><body style="font-family:sans-serif;padding:40px;background:#0F1E3D;color:#F5F1E8">
-          <h2 style="color:#C9A961">✓ GHL Connected</h2>
-          <p>SYNVIA OS is now connected to GoHighLevel.</p>
-          <p style="font-size:12px;color:rgba(245,241,232,0.5)">Location ID: ${global.GHL_LOCATION_ID}</p>
-          <p style="font-size:12px;color:rgba(245,241,232,0.5)">Token expires: ${new Date(global.GHL_TOKEN_EXPIRY).toLocaleString()}</p>
-          <p style="margin-top:20px"><a href="https://synviajointandspine.netlify.app" style="color:#18B6C8">← Return to SYNVIA OS</a></p>
-        </body></html>
-      `);
-    } else {
-      res.status(400).json({ error: 'Token exchange failed', details: data });
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-async function refreshGHLToken() {
-  if (!global.GHL_REFRESH_TOKEN) return false;
-  try {
-    const resp = await fetch('https://services.leadconnectorhq.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: global.GHL_REFRESH_TOKEN,
-        client_id: process.env.GHL_CLIENT_ID,
-        client_secret: process.env.GHL_CLIENT_SECRET,
-      }),
-    });
-    const data = await resp.json();
-    if (data.access_token) {
-      global.GHL_ACCESS_TOKEN = data.access_token;
-      global.GHL_REFRESH_TOKEN = data.refresh_token || global.GHL_REFRESH_TOKEN;
-      global.GHL_TOKEN_EXPIRY = Date.now() + (data.expires_in * 1000);
-      console.log('GHL token refreshed');
-      return true;
-    }
-  } catch (e) { console.error('Token refresh error:', e.message); }
-  return false;
+    doc.end();
+  });
 }
 
-async function ghlApi(path, opts = {}) {
-  if (global.GHL_TOKEN_EXPIRY && Date.now() > global.GHL_TOKEN_EXPIRY - 300000) {
-    await refreshGHLToken();
-  }
-  if (!global.GHL_ACCESS_TOKEN) throw new Error('GHL not connected — visit /ghl/auth first');
-  const url = 'https://services.leadconnectorhq.com' + path;
-  const res = await fetch(url, {
-    headers: {
-      'Authorization': 'Bearer ' + global.GHL_ACCESS_TOKEN,
-      'Content-Type': 'application/json',
-      'Version': '2021-07-28',
-      ...opts.headers,
-    },
-    ...opts,
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`GHL ${res.status}: ${txt.slice(0, 200)}`);
-  }
-  return res.json();
-}
-
-app.post('/ghl/action', async (req, res) => {
-  const { type, contact_phone, contact_email, contact_name } = req.body;
-  const locId = global.GHL_LOCATION_ID || process.env.GHL_LOCATION_ID;
-
-  try {
-    let contactId = null;
-    const searchVal = contact_phone || contact_email;
-    if (searchVal) {
-      const searchResp = await ghlApi(
-        `/contacts/?locationId=${locId}&query=${encodeURIComponent(searchVal)}&limit=1`
-      );
-      contactId = (searchResp.contacts || [])[0]?.id || null;
-    }
-
-    if (!contactId && type !== 'test') {
-      return res.status(404).json({ success: false, error: `Contact not found: ${searchVal}` });
-    }
-
-    let result = {};
-
-    switch (type) {
-      case 'test':
-        result = { message: 'SYNVIA OS → GHL connection working', timestamp: new Date().toISOString() };
-        break;
-      case 'move_stage': {
-        const { new_stage } = req.body;
-        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: [new_stage] }) });
-        result = { success: true, stage: new_stage, contact: contact_name };
-        break;
-      }
-      case 'fire_workflow': {
-        const { workflow, workflow_name } = req.body;
-        const wfId = process.env['GHL_WF_' + workflow.toUpperCase()];
-        if (!wfId) return res.status(400).json({ success: false, error: `Workflow env var GHL_WF_${workflow.toUpperCase()} not set in Render` });
-        await ghlApi(`/contacts/${contactId}/workflow/${wfId}`, { method: 'POST', body: JSON.stringify({}) });
-        result = { success: true, workflow: workflow_name || workflow, contact: contact_name };
-        break;
-      }
-      case 'send_sms': {
-        const { message } = req.body;
-        await ghlApi('/conversations/messages', { method: 'POST', body: JSON.stringify({ type: 'SMS', contactId, message }) });
-        result = { success: true, sms: 'sent', contact: contact_name };
-        break;
-      }
-      case 'add_note': {
-        const { note } = req.body;
-        await ghlApi(`/contacts/${contactId}/notes`, { method: 'POST', body: JSON.stringify({ body: note }) });
-        result = { success: true, note: 'added', contact: contact_name };
-        break;
-      }
-      case 'add_tag': {
-        const { tag } = req.body;
-        const contact = await ghlApi(`/contacts/${contactId}`);
-        const newTags = [...new Set([...(contact.contact?.tags || []), tag])];
-        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: newTags }) });
-        result = { success: true, tag, contact: contact_name };
-        break;
-      }
-      case 'remove_tag': {
-        const { tag } = req.body;
-        const contact = await ghlApi(`/contacts/${contactId}`);
-        const filtered = (contact.contact?.tags || []).filter(t => t !== tag);
-        await ghlApi(`/contacts/${contactId}`, { method: 'PUT', body: JSON.stringify({ tags: filtered }) });
-        result = { success: true, removed_tag: tag, contact: contact_name };
-        break;
-      }
-      case 'get_contacts': {
-        const { limit = 100, query = '' } = req.body;
-        result = await ghlApi(`/contacts/?locationId=${locId}&limit=${limit}${query ? '&query=' + encodeURIComponent(query) : ''}`);
-        break;
-      }
-      case 'get_appointments': {
-        const today = new Date().toISOString().split('T')[0];
-        const end = new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
-        result = await ghlApi(`/calendars/events?locationId=${locId}&startTime=${today}&endTime=${end}&limit=50`);
-        break;
-      }
-      case 'get_workflows': {
-        result = await ghlApi(`/workflows/?locationId=${locId}`);
-        break;
-      }
-      default:
-        return res.status(400).json({ success: false, error: `Unknown action type: ${type}` });
-    }
-
-    res.json({ success: true, type, result });
-
-  } catch (err) {
-    console.error('GHL action error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/ghl/status', (req, res) => {
-  res.json({
-    connected: !!global.GHL_ACCESS_TOKEN,
-    locationId: global.GHL_LOCATION_ID || null,
-    tokenExpiry: global.GHL_TOKEN_EXPIRY ? new Date(global.GHL_TOKEN_EXPIRY).toISOString() : null,
-    authUrl: 'https://synvia-backend.onrender.com/ghl/auth',
-  });
-});
-
-// ── Intake Submission ─────────────────────────────────────────
-app.post('/intake-submit', async (req, res) => {
-  try {
-    const payload = {
-      type: 'INTAKE_SUBMISSION',
-      status: 'UNREAD',
-      submittedAt: new Date().toISOString(),
-      source: 'synviaintakeform.netlify.app',
-      patient: req.body,
-    };
-
-    console.log('New intake received', payload);
-
-    const scriptUrl = process.env.APPS_SCRIPT_URL;
-    if (!scriptUrl) {
-      console.error('APPS_SCRIPT_URL is not set');
-      return res.status(500).json({ success: false, message: 'APPS_SCRIPT_URL not configured' });
-    }
-
-    const scriptRes = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!scriptRes.ok) {
-      const errText = await scriptRes.text();
-      console.error('Apps Script error:', errText);
-      return res.status(502).json({ success: false, message: 'Failed to forward intake to Apps Script', detail: errText });
-    }
-
-    res.json({ success: true, message: 'Intake submitted and alert created' });
-  } catch (err) {
-    console.error('Intake submit error:', err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`SYNVIA Backend running on port ${PORT}`);
-});
-const sgMail = require('@sendgrid/mail');
-const { generateIntakePDF } = require('./generateIntakePDF');
+module.exports = { generateIntakePDF };
