@@ -467,3 +467,5 @@ app.post('/intake-submit', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`SYNVIA Backend running on port ${PORT}`);
 });
+const sgMail = require('@sendgrid/mail');
+const { generateIntakePDF } = require('./generateIntakePDF');
