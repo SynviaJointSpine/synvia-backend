@@ -296,7 +296,201 @@ app.post('/intake-pdf', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+// ============================================================
+// SYNVIA REVENUE SYNC ROUTES
+// Add these routes to your existing server.js on Render.
+// Paste BEFORE the last line: app.listen(PORT, ...)
+// No new dependencies needed — uses fs, path (already imported).
+// ============================================================
 
-app.listen(PORT, () => {
+// ── helper: read all patient JSONs from disk ──────────────────
+function getAllPatients() {
+  const dir = '/data/patients';
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(f => f.endsWith('.json'))
+    .map(f => {
+      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); }
+      catch(e) { return null; }
+    })
+    .filter(Boolean);
+}
+
+// ── helper: extract billed amount from a treatment plan ──────
+function extractBilled(tp) {
+  if (!tp) return 0;
+  // Treatment Plan stores paymentOptions with per-option prices
+  // and injectionRows / therapyRows with quantities
+  let total = 0;
+  // Try payInFull price first (most accurate single-number)
+  if (tp.payInFull && tp.payInFull > 0) return Number(tp.payInFull);
+  // Fall back to summing injection + therapy line items
+  const rows = [...(tp.injectionRows || []), ...(tp.therapyRows || [])];
+  rows.forEach(r => {
+    const qty   = Number(r.qty || r.quantity || 1);
+    const price = Number(r.price || r.unitPrice || r.cost || 0);
+    total += qty * price;
+  });
+  // Last resort: payAsYouGo total
+  if (!total && tp.payAsYouGo) total = Number(tp.payAsYouGo);
+  return total;
+}
+
+// ── helper: extract month label from a date string ───────────
+function toMonthKey(dateStr) {
+  if (!dateStr) return 'Unknown';
+  const d = new Date(dateStr);
+  if (isNaN(d)) return 'Unknown';
+  return d.toLocaleString('en-US', { month: 'short', year: '2-digit' }); // "Mar 26"
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /revenue/summary
+// Returns aggregated revenue derived from all patient JSON files.
+// Used by the Revenue Dashboard for EHR-side ground truth.
+// ────────────────────────────────────────────────────────────
+app.get('/revenue/summary', (req, res) => {
+  // Optional API key check (same key as EHR routes)
+  const key = req.headers['x-api-key'] || req.query.key;
+  if (process.env.EHR_API_KEY && key !== process.env.EHR_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const patients = getAllPatients();
+    let grandTotal = 0;
+    const byProvider   = {};
+    const byMonth      = {};
+    const byTreatment  = {};
+    const patientRows  = [];
+
+    patients.forEach(p => {
+      const name     = p.patient?.name || p.name || 'Unknown';
+      const provider = p.history?.provider || p.examination?.provider || 'Unassigned';
+      const createdAt= p.createdAt || p.patient?.createdAt || null;
+      const monthKey = toMonthKey(createdAt);
+      const billed   = extractBilled(p.treatmentPlan);
+
+      grandTotal += billed;
+
+      // by provider
+      byProvider[provider] = (byProvider[provider] || 0) + billed;
+
+      // by month
+      byMonth[monthKey] = (byMonth[monthKey] || 0) + billed;
+
+      // by treatment type (from injection/therapy rows)
+      const rows = [
+        ...(p.treatmentPlan?.injectionRows || []),
+        ...(p.treatmentPlan?.therapyRows   || [])
+      ];
+      rows.forEach(r => {
+        const tName = r.name || r.type || r.treatment || 'Other';
+        const qty   = Number(r.qty || r.quantity || 1);
+        const price = Number(r.price || r.unitPrice || r.cost || 0);
+        byTreatment[tName] = (byTreatment[tName] || 0) + (qty * price);
+      });
+
+      // patient-level row for drilldown table
+      patientRows.push({
+        name,
+        provider,
+        monthKey,
+        billed,
+        dob:       p.patient?.dob     || p.dob     || null,
+        phone:     p.patient?.phone   || p.phone   || null,
+        condition: p.history?.primaryComplaint || p.examination?.primaryComplaint || null,
+        soapCount: (p.soapNotes || []).length,
+        hasPhoto:  !!p.photoUrl,
+      });
+    });
+
+    // Sort month keys chronologically
+    const monthOrder = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const sortedMonths = Object.entries(byMonth).sort(([a],[b]) => {
+      const [aM, aY] = a.split(' ');
+      const [bM, bY] = b.split(' ');
+      if (aY !== bY) return Number(aY) - Number(bY);
+      return monthOrder.indexOf(aM) - monthOrder.indexOf(bM);
+    });
+
+    res.json({
+      ok: true,
+      generatedAt:   new Date().toISOString(),
+      totalPatients: patients.length,
+      grandTotal,
+      byMonth:       Object.fromEntries(sortedMonths),
+      byMonthSorted: sortedMonths.map(([k, v]) => ({ month: k, revenue: v })),
+      byProvider,
+      byTreatment,
+      patients: patientRows.sort((a, b) => b.billed - a.billed),
+    });
+  } catch (err) {
+    console.error('[revenue/summary]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// GET /revenue/patient/:id
+// Returns revenue detail for a single patient by name-slug or DOB key.
+// id format: "firstname-lastname-YYYYMMDD"  (same as filename without .json)
+// ────────────────────────────────────────────────────────────
+app.get('/revenue/patient/:id', (req, res) => {
+  const key = req.headers['x-api-key'] || req.query.key;
+  if (process.env.EHR_API_KEY && key !== process.env.EHR_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const filePath = `/data/patients/${req.params.id}.json`;
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Patient not found' });
+  }
+  try {
+    const p      = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const billed = extractBilled(p.treatmentPlan);
+    res.json({
+      ok: true,
+      name:    p.patient?.name,
+      billed,
+      treatmentPlan: p.treatmentPlan || null,
+      soapNotes:     (p.soapNotes || []).map(n => ({
+        date:  n.date,
+        pain:  n.pain,
+        subj:  n.sComplaint || n.subjective,
+        plan:  n.plan,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// POST /revenue/manual
+// Lets the dashboard push a manual revenue entry (e.g. from
+// Google Sheets rows that don't map to a patient chart yet).
+// Body: { month, label, amount, source, apiKey }
+// Appended to /data/revenue_manual.json
+// ────────────────────────────────────────────────────────────
+app.post('/revenue/manual', (req, res) => {
+  const key = req.headers['x-api-key'] || req.body?.apiKey;
+  if (process.env.EHR_API_KEY && key !== process.env.EHR_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { month, label, amount, source } = req.body || {};
+  if (!amount || isNaN(Number(amount))) {
+    return res.status(400).json({ error: 'amount is required and must be numeric' });
+  }
+  const manualFile = '/data/revenue_manual.json';
+  let entries = [];
+  if (fs.existsSync(manualFile)) {
+    try { entries = JSON.parse(fs.readFileSync(manualFile, 'utf8')); } catch(e) {}
+  }
+  const entry = { id: Date.now(), month, label, amount: Number(amount), source, addedAt: new Date().toISOString() };
+  entries.push(entry);
+  fs.writeFileSync(manualFile, JSON.stringify(entries, null, 2));
+  res.json({ ok: true, entry });
+});app.listen(PORT, () => {
   console.log(`SYNVIA Backend running on port ${PORT}`);
 });
