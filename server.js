@@ -8,6 +8,7 @@ const { sendIntakeMail } = require('./intake-mailer');
 
 const app = express();
 app.use(cors());
+require('./revenue-sheet').installRevenueSheet(app);
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -495,4 +496,5 @@ app.post('/revenue/manual', (req, res) => {
 });app.listen(PORT, () => {
   console.log(`SYNVIA Backend running on port ${PORT}`);
 });
+
 
