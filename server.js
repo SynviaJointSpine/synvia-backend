@@ -4,6 +4,7 @@ const twilio = require('twilio');
 const sgMail = require('@sendgrid/mail');
 const path = require('path');
 const fs = require('fs');
+const { sendIntakeMail } = require('./intake-mailer');
 
 const app = express();
 app.use(cors());
@@ -273,14 +274,14 @@ app.post('/intake-pdf', async (req, res) => {
       ? new Date(data.submittedAt).toLocaleString('en-US', { timeZone: 'America/Chicago' })
       : new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
 
-    await sgMail.send({
+    await sendIntakeMail({
       to:      'info@synviajointandspine.com',
       from:    process.env.FROM_EMAIL,
       subject: 'NEW PATIENT INTAKE SUBMISSION',
       text:    `New intake: ${patientName} | ${data.cell} | ${data.chief} | Pain: ${data.pain}/10 | ${submittedAt} CT`,
       html: `<div style="font-family:Helvetica,sans-serif;max-width:540px;color:#1A202C"><div style="border-bottom:2px solid #0F2550;padding-bottom:12px;margin-bottom:20px"><span style="font-size:18px;font-weight:bold;color:#0F2550">SYNVIA Joint &amp; Spine</span><br><span style="font-size:12px;color:#4A5568">New Patient Intake Received</span></div><table style="width:100%;font-size:13px"><tr><td style="color:#4A5568;padding:4px 0;width:120px">PATIENT</td><td style="font-weight:bold">${patientName}</td></tr><tr><td style="color:#4A5568;padding:4px 0">DOB</td><td>${data.dob||'—'}</td></tr><tr><td style="color:#4A5568;padding:4px 0">PHONE</td><td>${data.cell||'—'}</td></tr><tr><td style="color:#4A5568;padding:4px 0">EMAIL</td><td>${data.email||'—'}</td></tr><tr><td style="color:#4A5568;padding:4px 0">CHIEF COMPLAINT</td><td style="font-weight:bold">${data.chief||'—'}</td></tr><tr><td style="color:#4A5568;padding:4px 0">PAIN SCORE</td><td style="font-weight:bold;color:#C0392B;font-size:16px">${data.pain||'—'} / 10</td></tr><tr><td style="color:#4A5568;padding:4px 0">SUBMITTED</td><td>${submittedAt} CT</td></tr></table><p style="margin-top:20px;font-size:12px;color:#4A5568">Full intake attached as PDF.</p></div>`,
       attachments: [{ content: pdfBuffer.toString('base64'), filename: `SYNVIA_Intake_${patientName.replace(/\s+/g,'_')}.pdf`, type: 'application/pdf', disposition: 'attachment' }],
-    });
+    }, sgMail, data.receiptId);
 
     console.log(`[intake-pdf] Email sent for ${patientName}`);
 
