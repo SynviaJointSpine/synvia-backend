@@ -35,6 +35,30 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 @media(max-width:720px){.clinic-layout{grid-template-columns:1fr}}
 </style>
 <link rel="stylesheet" href="glass.css">
+<style>
+#consultation:has(#success:not([hidden])) {
+  background: linear-gradient(145deg, #163654, #0b2039 75%);
+  border: 2px solid #d4b06a;
+  box-shadow: 0 16px 40px #0b203945;
+  color: #fff;
+}
+#success { scroll-margin-top: 24px; }
+#success:focus { outline: none; }
+#success .confirmation-icon {
+  display: grid; place-items: center; width: 52px; height: 52px;
+  margin-bottom: 18px; border-radius: 50%; background: #f0d095;
+  color: #102944; font-size: 30px; font-weight: 800;
+}
+#success h2 { color: #fff; margin-bottom: 18px; }
+#success .confirmation-time {
+  display: block; padding: 14px 16px; border: 1px solid #ffffff40;
+  border-radius: 12px; background: #ffffff12;
+  color: #fff; font-size: clamp(1.1rem, 2.6vw, 1.5rem); font-weight: 750;
+  line-height: 1.35;
+}
+#success p { color: #e7eef8; }
+#success a { color: #f6dba7; display: inline-block; padding: 10px 0; }
+</style>
 </head>
 <body>
 <header><a class="brand" href="https://synviajointandspine.com/">SYNVIA <span>JOINT &amp; SPINE</span></a><span class="location">Frisco, Texas</span><a href="tel:+19729870114">(972) 987-0114</a></header>
@@ -74,10 +98,12 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <p class="status" id="booking-status" role="status"></p>
 <a href="#consultation" id="edit-contact">Back to contact details</a>
 </form>
-<div id="success" hidden tabindex="-1">
-<h2>Phone pre-screen booked</h2>
-<p><span id="booked-time"></span>. SYNVIA will call the number you provided.</p>
-<a href="tel:+19729870114">Call SYNVIA at (972) 987-0114</a>
+<div id="success" hidden tabindex="-1" role="region" aria-labelledby="booking-confirmed-title" aria-describedby="booked-time booking-next-step">
+<span class="confirmation-icon" aria-hidden="true">✓</span>
+<h2 id="booking-confirmed-title">Phone pre-screen booked</h2>
+<p class="confirmation-time" id="booked-time"></p>
+<p id="booking-next-step">SYNVIA will call the number you provided.</p>
+<a href="tel:+19729870114">Need to reschedule? Call (972) 987-0114</a>
 </div>
 </section>
 </div>
@@ -195,7 +221,8 @@ booking.addEventListener('submit', async event => {
       document.querySelector('#booked-time').textContent = label.format(new Date(slot + 'Z')) + ' Central';
       const confirmation = document.querySelector('#success');
       confirmation.hidden = false;
-      confirmation.focus();
+      confirmation.focus({ preventScroll: true });
+      confirmation.scrollIntoView({ block: 'start' });
     } else {
       throw new Error('Unexpected response');
     }
