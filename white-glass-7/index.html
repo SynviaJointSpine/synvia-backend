@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Request a phone consultation for Lean Forward medical weight loss at SYNVIA Joint & Spine in Frisco, Texas.">
+<meta name="description" content="Schedule a phone pre-screen for Lean Forward medical weight loss at SYNVIA Joint & Spine in Frisco, Texas.">
 <meta property="og:title" content="Lean Forward | SYNVIA Medical Weight Loss">
 <meta property="og:description" content="Tired of losing weight and gaining it back? Request a Lean Forward phone consultation with SYNVIA in Frisco.">
 <meta property="og:type" content="website">
@@ -46,28 +46,36 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <h1 id="headline"><span>Tired of losing weight</span> and gaining it back?</h1>
 <p class="sub">Start before Christmas. Go into January with a medical weight loss plan built around you.</p>
 <p class="intro">If hunger and cravings keep derailing your plan, talk with SYNVIA about medical options and a plan you can follow.</p>
-<a class="hero-link" href="#consultation">Request a phone consultation</a>
+<a class="hero-link" href="#consultation">Schedule a phone pre-screen</a>
 </div>
 </section>
 <section class="card" id="consultation" aria-labelledby="consultation-title">
 <div id="form-panel">
-<h2 id="consultation-title">Request a phone consultation</h2>
+<h2 id="consultation-title">Schedule a phone pre-screen</h2>
 <p>Ask about GLP‑1 options, what the program costs, and what it would take to get started.</p>
 <p class="physician-oversight"><strong>Physician oversight.</strong> Medical doctors oversee the Lean Forward program, including decisions about whether a prescription GLP‑1 is appropriate.</p>
 <form id="request">
 <label class="field">Full name<input name="full_name" autocomplete="name" required maxlength="80"></label>
 <label class="field">Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="24"></label>
-<label class="field">Best time to call <span class="optional">(optional)</span><select name="callback"><option value="">Any time</option><option>Morning</option><option>Afternoon</option></select></label>
 <div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
 <label class="consent"><input name="consent" type="checkbox" required><span>I agree that SYNVIA may call me about this consultation request.</span></label>
-<button type="submit">Request my consultation</button>
+<button type="submit">Continue to scheduling</button>
 <p class="status" id="status" role="alert"></p>
 </form>
 <noscript><p>Please call <a href="tel:+19729870114">(972) 987-0114</a> to request a consultation.</p></noscript>
 </div>
+<form id="booking" hidden>
+<h2>Choose your pre-screen time</h2>
+<p>Pick an available time for your 30-minute phone call. All times are Central.</p>
+<label class="field">Date<select id="booking-date" required></select></label>
+<label class="field">Time<select id="booking-time" required></select></label>
+<button type="submit">Book my phone pre-screen</button>
+<p class="status" id="booking-status" role="status"></p>
+<a href="#consultation" id="edit-contact">Back to contact details</a>
+</form>
 <div id="success" hidden tabindex="-1">
-<h2>Request received</h2>
-<p>Thanks for reaching out. The SYNVIA team will call you at the number you provided.</p>
+<h2>Phone pre-screen booked</h2>
+<p><span id="booked-time"></span>. SYNVIA will call the number you provided.</p>
 <a href="tel:+19729870114">Call SYNVIA at (972) 987-0114</a>
 </div>
 </section>
@@ -88,7 +96,7 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <details><summary>What about peptides for inflammation?</summary><p>Tell us if joint discomfort or inflammation is affecting your activity. A clinician can help you evaluate the cause and discuss options, including what evidence and safety information are available for any peptide you’re considering.</p></details>
 <details><summary>Do I have to decide about medication on the call?</summary><p>You can use the call to ask questions and learn what a clinical evaluation would involve. A prescription decision requires a clinician’s review.</p></details>
 </div>
-<div class="final-cta"><a class="cta-link" href="#consultation">Request my phone consultation</a></div>
+<div class="final-cta"><a class="cta-link" href="#consultation">Schedule my phone pre-screen</a></div>
 </section>
 <section class="content clinic-layout" aria-labelledby="clinic-title">
 <div>
@@ -96,7 +104,7 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <h2 id="clinic-title">Come meet us at SYNVIA.</h2>
 <p>Maybe you want to take longer walks, play another nine holes, or get down on the floor with the grandkids. Tell us what you want to do more of and what has been getting in the way. If joint discomfort affects how you move, bring that up when we call.</p>
 <p>On your first call, we’ll explain how Lean Forward works, answer questions about cost, and walk you through what to expect if you decide to schedule an evaluation.</p>
-<a class="cta-link" href="#consultation">Request a Phone Consultation</a>
+<a class="cta-link" href="#consultation">Schedule a phone pre-screen</a>
 </div>
 <div class="clinic-address">
 <h3>SYNVIA Joint &amp; Spine</h3>
@@ -108,38 +116,92 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <footer><span>SYNVIA Joint &amp; Spine · Frisco, TX</span><span>Individual results vary.</span></footer>
 <script>
 const form = document.querySelector('#request');
-const status = document.querySelector('#status');
-const button = form.querySelector('button');
-form.addEventListener('submit', async (event) => {
+const booking = document.querySelector('#booking');
+const panel = document.querySelector('#form-panel');
+const date = document.querySelector('#booking-date');
+const time = document.querySelector('#booking-time');
+const status = document.querySelector('#booking-status');
+const bookButton = booking.querySelector('button');
+const label = new Intl.DateTimeFormat('en-US', { dateStyle: 'full', timeStyle: 'short', timeZone: 'UTC' });
+let contact;
+let slots = [];
+
+async function rpc(name, data = {}) {
+  const response = await fetch('https://tuxqiqqwqahnrpflpfug.supabase.co/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: 'sb_publishable_InpeStVGNbeYfmHQnoJD4A_CT_kIbTH' },
+    body: JSON.stringify(data),
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) throw new Error('Request failed');
+  return response.json();
+}
+function renderTimes() {
+  time.replaceChildren(...slots.filter(slot => slot.startsWith(date.value)).map(slot =>
+    new Option(label.format(new Date(slot + 'Z')).split(' at ').pop(), slot)));
+  bookButton.disabled = !time.options.length;
+}
+async function loadSlots() {
+  bookButton.disabled = true;
+  status.textContent = 'Loading available times…';
+  try {
+    slots = (await rpc('lean_prescreen_slots')).map(item => item.slot);
+    date.replaceChildren(...Array.from(new Set(slots.map(slot => slot.slice(0, 10))), day =>
+      new Option(new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { dateStyle: 'full', timeZone: 'UTC' }), day)));
+    renderTimes();
+    status.textContent = slots.length ? '' : 'No times are available. Please call (972) 987-0114.';
+  } catch {
+    status.textContent = 'We couldn’t load times. Go back and try again, or call (972) 987-0114.';
+  }
+}
+form.addEventListener('submit', event => {
   event.preventDefault();
   const fields = new FormData(form);
   const name = fields.get('full_name').trim();
   const phone = fields.get('phone').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
   if (name.length < 2 || !/^[2-9]\d{2}[2-9]\d{6}$/.test(phone)) {
-    status.textContent = 'Enter your full name and a valid US phone number.';
+    document.querySelector('#status').textContent = 'Enter your full name and a valid US phone number.';
     return;
   }
-  button.disabled = true;
-  button.textContent = 'Sending request…';
-  status.textContent = '';
+  contact = { full_name: name, callback_phone: phone, call_consent: fields.has('consent'), website: fields.get('website') };
+  panel.hidden = true;
+  booking.hidden = false;
+  document.querySelector('#consultation').scrollIntoView();
+  date.focus();
+  loadSlots();
+});
+date.addEventListener('change', renderTimes);
+document.querySelector('#edit-contact').addEventListener('click', event => {
+  event.preventDefault();
+  booking.hidden = true;
+  panel.hidden = false;
+  form.elements.full_name.focus();
+});
+booking.addEventListener('submit', async event => {
+  event.preventDefault();
+  const slot = time.value;
+  bookButton.disabled = true;
+  status.textContent = 'Booking your pre-screen…';
   try {
-    const response = await fetch('https://tuxqiqqwqahnrpflpfug.supabase.co/rest/v1/rpc/request_lean_forward_consult', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: 'sb_publishable_InpeStVGNbeYfmHQnoJD4A_CT_kIbTH' },
-      body: JSON.stringify({ full_name: name, callback_phone: phone, callback_window: fields.get('callback'), call_consent: fields.has('consent'), website: fields.get('website') }),
-      signal: AbortSignal.timeout(12000)
-    });
-    if (!response.ok || await response.json() !== true) throw new Error('Request failed');
-    document.querySelector('#form-panel').hidden = true;
-    const confirmation = document.querySelector('#success');
-    confirmation.hidden = false;
-    confirmation.focus();
-    form.reset();
+    const result = await rpc('book_lean_prescreen', { ...contact, requested_slot: slot });
+    if (result === 'unavailable') {
+      await loadSlots();
+      status.textContent = 'That time was taken. Please choose another.';
+    } else if (result === 'already_booked') {
+      status.textContent = 'You already have a pre-screen booked. Call (972) 987-0114 to change it.';
+    } else if (result === 'booked') {
+      booking.hidden = true;
+      document.querySelector('#booked-time').textContent = label.format(new Date(slot + 'Z')) + ' Central';
+      const confirmation = document.querySelector('#success');
+      confirmation.hidden = false;
+      confirmation.focus();
+    } else {
+      throw new Error('Unexpected response');
+    }
   } catch {
-    status.textContent = 'We couldn’t send your request. Please try again or call (972) 987-0114.';
+    status.textContent = 'We couldn’t confirm your booking. Please retry or call (972) 987-0114.';
   } finally {
-    button.disabled = false;
-    button.textContent = 'Request my consultation';
+    bookButton.disabled = !time.options.length;
   }
 });
 </script>
