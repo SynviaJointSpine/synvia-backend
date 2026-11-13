@@ -1,0 +1,117 @@
+:root {
+  --ink: #19283e;
+  --navy: #173658;
+  --muted: #47566b;
+  --gold-ink: #70582f;
+  --line: #dbe4ef;
+  --glass: linear-gradient(145deg, #fff 0%, #ffffffb8 100%);
+  --shadow: 0 18px 55px #263f6510, inset 0 1px 0 #fff;
+}
+body {
+  background: radial-gradient(ellipse at 5% 0, #e6eefb 0, transparent 42%),
+    radial-gradient(ellipse at 96% 18%, #e7effa 0, transparent 40%), #f7f9fc;
+  color: var(--ink);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+header, footer { min-height: 76px; color: var(--muted); }
+.brand { color: var(--ink); font: 650 1.28rem Georgia, serif; letter-spacing: .14em; }
+.brand span { color: var(--gold-ink); font: 750 .57rem system-ui, sans-serif; letter-spacing: .14em; }
+header > a:last-child { color: var(--navy); font-weight: 700; white-space: nowrap; }
+.location { color: var(--muted); }
+.layout { gap: 20px; }
+.hero, .card, .content { border: 1px solid #fff; background: var(--glass); box-shadow: var(--shadow); }
+.hero { min-height: 555px; align-items: center; }
+.hero img { width: 54%; object-position: center 28%; opacity: .9; }
+.hero:before { background: linear-gradient(90deg, #f8fbff 24%, #f8fbfff5 39%, #f8fbff00 81%), linear-gradient(0deg, #eaf2fd44, transparent 50%); }
+.hero-content { max-width: 420px; }
+.eyebrow, .content .eyebrow { color: var(--gold-ink); letter-spacing: .12em; }
+h1 { max-width: 420px; font-size: clamp(38px, 4.65vw, 65px); line-height: .99; margin: 17px 0 24px; }
+h1 span { display: inline; color: inherit; }
+.sub { font-size: clamp(17px, 1.65vw, 22px); max-width: 270px; }
+.intro { color: var(--muted); max-width: 270px; }
+.card { backdrop-filter: blur(18px); }
+.field input, .field select { border-color: var(--line); border-radius: 12px; }
+button, .cta-link, .hero-link { border-radius: 12px; }
+.content { margin-top: 24px; }
+.program-card, .clinic-address { background: #ffffffa8; border-color: var(--line); }
+.faq details, .final-cta { border-color: var(--line); }
+@media(max-width: 1000px) {
+}
+@media(max-width: 720px) {
+  header, footer { min-height: 62px; }
+  .layout { gap: 12px; }
+  .hero { min-height: 470px; align-items: flex-end; }
+  .hero img { width: 100%; object-position: center 27%; }
+  .hero:before { background: linear-gradient(0deg, #f8fbff 9%, #f8fbfff7 43%, #f8fbff14 85%); }
+  .hero-link { color: white; background: var(--navy); }
+  .content { margin-top: 12px; }
+}
+@media(max-width: 375px) { .brand span { display: none; } }
+
+.program-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.program-panel::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 auto;
+  height: clamp(350px, 55vw, 540px);
+  background-image:
+    linear-gradient(90deg, #fff 12%, #fffffff5 40%, #ffffff87 68%, #ffffff42),
+    linear-gradient(0deg, #fff 0%, #ffffff00 70%),
+    url("program-walk.jpg");
+  background-position: center, center, right 38%;
+  background-size: cover;
+  background-repeat: no-repeat;
+  opacity: .66;
+  filter: saturate(.65);
+  pointer-events: none;
+}
+@media (max-width: 720px) {
+  .program-panel::before {
+    height: 430px;
+    opacity: .40;
+    background-position: center, center, 70% top;
+  }
+}
+
+.program-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 325px;
+  padding-bottom: clamp(130px, 14vw, 176px);
+}
+.program-card::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: auto 0 0;
+  height: clamp(165px, 19vw, 225px);
+  background:
+    linear-gradient(180deg, #fff 0%, #ffffff9c 31%, #ffffff18 76%, #ffffff24 100%),
+    var(--card-photo) right bottom / cover no-repeat;
+  opacity: .62;
+  filter: saturate(.72);
+  pointer-events: none;
+}
+.program-card--consult { --card-photo: url("program-consult.jpg"); }
+.program-card--meal { --card-photo: url("program-meal.jpg"); }
+.program-card--light { --card-photo: url("program-light.jpg"); }
+@media (max-width: 720px) {
+  .program-card { min-height: 265px; padding-bottom: 140px; }
+  .program-card::before { height: 185px; }
+}
+
+.card .physician-oversight {
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #edf3fabf;
+  font-size: .875rem;
+  line-height: 1.45;
+}
+.physician-oversight strong { color: var(--navy); }
