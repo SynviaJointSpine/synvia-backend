@@ -59,6 +59,7 @@ main{max-width:1280px;margin:auto;padding:12px clamp(20px,5vw,72px) 18px}.layout
 <label class="field">Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="24"></label>
 <div class="trap" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
 <label class="consent"><input name="consent" type="checkbox" required><span>I agree that SYNVIA may call me about this consultation request.</span></label>
+<label class="consent"><input name="sms_consent" type="checkbox"><span>Text me my booking confirmation and up to two appointment reminders from SYNVIA. Message and data rates may apply. Reply STOP to opt out.</span></label>
 <button type="submit">Continue to scheduling</button>
 <p class="status" id="status" role="alert"></p>
 </form>
@@ -163,7 +164,7 @@ form.addEventListener('submit', event => {
     document.querySelector('#status').textContent = 'Enter your full name and a valid US phone number.';
     return;
   }
-  contact = { full_name: name, callback_phone: phone, call_consent: fields.has('consent'), website: fields.get('website') };
+  contact = { full_name: name, callback_phone: phone, call_consent: fields.has('consent'), sms_consent: fields.has('sms_consent'), website: fields.get('website') };
   panel.hidden = true;
   booking.hidden = false;
   document.querySelector('#consultation').scrollIntoView();
@@ -183,7 +184,7 @@ booking.addEventListener('submit', async event => {
   bookButton.disabled = true;
   status.textContent = 'Booking your pre-screen…';
   try {
-    const result = await rpc('book_lean_prescreen', { ...contact, requested_slot: slot });
+    const result = await rpc('book_lean_prescreen_with_sms', { ...contact, requested_slot: slot });
     if (result === 'unavailable') {
       await loadSlots();
       status.textContent = 'That time was taken. Please choose another.';
