@@ -115,3 +115,29 @@ button, .cta-link, .hero-link { border-radius: 12px; }
   line-height: 1.45;
 }
 .physician-oversight strong { color: var(--navy); }
+
+.hero:before {
+  background: linear-gradient(90deg, #f8fbff 30%, #f8fbffef 52%, #f8fbff38 89%);
+}
+#consultation {
+  border: 2px solid #bd9460;
+  box-shadow: 0 12px 32px #16385a24;
+}
+#consultation h2 { color: #102b4b; }
+@media (max-width: 720px) {
+  .hero { padding-top: clamp(155px, 44vw, 250px); }
+  .hero img { height: clamp(225px, 66vw, 365px); object-position: center 16%; }
+  .hero:before {
+    background: linear-gradient(180deg, transparent 0, #f8fbff15 85px, #f8fbffe8 155px, #f8fbff 245px);
+  }
+  .hero-content { max-width: none; }
+  .hero-link {
+    display: block;
+    width: 100%;
+    min-height: 54px;
+    padding: 14px 12px;
+    background: #102b4b;
+    border: 1px solid #bd9460;
+    box-shadow: 0 5px 14px #102b4b35;
+  }
+}
